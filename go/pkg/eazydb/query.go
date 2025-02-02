@@ -17,7 +17,6 @@ type Query struct {
 	db                *sql.DB
 	name              string
 	fields            interface{}
-	fieldsMulti       []interface{}
 	conditions        []Condition
 	maxrows           int
 	op                dbtypes.QueryOperation
@@ -82,12 +81,13 @@ func (q *Query) Update(fields interface{}) *Query {
 	return q
 }
 
-func (q *Query) Add(fields ...interface{}) *Query {
+func (q *Query) Add(fields interface{}) *Query {
 	if q.op != "" {
 		q.err = fmt.Errorf("table operation already set to %v and so cannot be set to add", q.op)
 	}
 	q.op = dbtypes.INSERT
-	q.fieldsMulti = fields
+	q.fields = fields
+
 	return q
 }
 
@@ -107,7 +107,7 @@ func (q *Query) Exec(obj ...interface{}) (*Metadata, error) {
 
 	metadata.Query, err = q.constructQuery()
 	if err != nil {
-		return nil, q.err
+		return nil, err
 	}
 
 	if q.dryrun {
@@ -157,8 +157,10 @@ func (q *Query) handleExec(query string) (*Metadata, error) {
 	q.log.Debugf("query execution took %v", metadata.Duration)
 
 	affected, err := result.RowsAffected()
-	if err != nil {
+	if err == nil {
 		metadata.RowsAffected = int(affected)
+	} else {
+		q.log.Errorf("could not read rows affected: %v", err)
 	}
 	return metadata, nil
 
@@ -170,15 +172,21 @@ func (q *Query) constructQuery() (string, error) {
 	if q.op == dbtypes.INSERT || q.op == dbtypes.UPDATE {
 		ignoreNull = true
 	}
+
+	var err error
+	if q.op == dbtypes.INSERT {
+		stmt = fmt.Sprintf("%v %v", q.op, q.name)
+		return q.constructInsertQuery(stmt)
+	}
+
+	if q.op == dbtypes.DELETE {
+		stmt = q.constructDeleteQuery()
+		return stmt, nil
+	}
+
 	fields, err := constructFields(q.fields, ignoreNull)
 	if err != nil {
 		return "", err
-	}
-
-	if q.op == dbtypes.INSERT {
-		stmt = fmt.Sprintf("%v %v", q.op, q.name)
-		stmt, err = q.constructInsertQuery(stmt)
-
 	}
 
 	if q.op == dbtypes.SELECT {
@@ -187,42 +195,72 @@ func (q *Query) constructQuery() (string, error) {
 	if q.op == dbtypes.UPDATE {
 		stmt = q.constructUpdateQuery(fields)
 	}
+
 	return stmt, nil
 }
 
-// INSERT INTO users (name, age, email)
-// VALUES
+// Produces a line like below
 //
-//	('Alice', 25, 'alice@example.com'),
-//	('Bob', 30, 'bob@example.com'),
-//	('Charlie', 22, 'charlie@example.com');
+//	('Charlie', 22, 'charlie@example.com')
 func insertValueLine(fields []field) (string, error) {
-	fields, err := constructFields(fields, true)
-	if err != nil {
-		return "", err
-	}
-
 	_, vals := groupedList(fields)
 	return vals, nil
 }
 
 // INSERT INTO users (name, age) VALUES ('Mat', 24);
 func (q *Query) constructInsertQuery(stmt string) (string, error) {
-
-	for _, field := range q.fieldsMulti {
-
+	// Ensure q.fields is not nil
+	if q.fields == nil {
+		return "", fmt.Errorf("fields cannot be nil")
 	}
 
-	fields, err := constructFields(q.fields, true)
-	if err != nil {
-		return "", err
+	vals := make([]string, 0)
+
+	// set later
+	var names string
+
+	v := reflect.ValueOf(q.fields)
+	if v.Kind() == reflect.Slice {
+		for i := 0; i < v.Len(); i++ {
+			entry := v.Index(i).Interface()
+
+			parsed, err := constructFields(entry, true)
+			if err != nil {
+				return "", err
+			}
+
+			if i == 0 {
+				names, _ = groupedList(parsed)
+			}
+
+			// Convert parsed fields into values
+			val, err := insertValueLine(parsed)
+			if err != nil {
+				return "", err
+			}
+			vals = append(vals, val)
+		}
+	} else {
+		// Handle single entry case
+		parsed, err := constructFields(q.fields, true)
+		if err != nil {
+			return "", err
+		}
+		names, _ = groupedList(parsed)
+
+		val, err := insertValueLine(parsed)
+		if err != nil {
+			return "", err
+		}
+		vals = append(vals, val)
 	}
 
-	names, vals := groupedList(fields)
-	stmt += fmt.Sprintf(" %s VALUES", names)
-	stmt += fmt.Sprintf(" %s", vals)
+	// Build the SQL statement
+	stmt += fmt.Sprintf(" %s VALUES ", names)
+	stmt += strings.Join(vals, ", ")
 	stmt += ";"
-	return stmt
+
+	return stmt, nil
 }
 
 // SELECT name, age FROM users WHERE name = 'Mat';
@@ -234,6 +272,13 @@ func (q *Query) constructGetQuery(fields []field) string {
 	stmt += q.constructWhereClause()
 	stmt += q.constructLimitClause()
 
+	return stmt
+}
+
+func (q *Query) constructDeleteQuery() string {
+	stmt := fmt.Sprintf("%s FROM %s ", q.op, q.name)
+	stmt += q.constructWhereClause()
+	stmt += q.constructLimitClause()
 	return stmt
 }
 
@@ -397,30 +442,4 @@ func (q *Query) unmarshalToObj(rows *sql.Rows, obj interface{}) error {
 
 	return json.Unmarshal(bytes, &obj)
 
-	// // If there is only one row, ensure obj is not a slice
-	// if len(data) == 1 {
-	// 	if reflect.TypeOf(obj[0]).Kind() == reflect.Slice {
-	// 		return fmt.Errorf("obj should not be a slice when there is exactly one row")
-	// 	}
-
-	// 	rowJSON, err := json.Marshal(data[0])
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to marshal row data: %v", err)
-	// 	}
-	// 	if err := json.Unmarshal(rowJSON, obj[0]); err != nil {
-	// 		return fmt.Errorf("failed to unmarshal data into object: %v", err)
-	// 	}
-	// } else {
-	// 	// If multiple rows, unmarshal all the rows into a slice of objects
-	// 	rowJSON, err := json.Marshal(data)
-	// 	q.log.Debug(string(rowJSON))
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to marshal rows data: %v", err)
-	// 	}
-	// 	if err := json.Unmarshal(rowJSON, &obj); err != nil {
-	// 		return fmt.Errorf("failed to unmarshal rows data into objects: %v", err)
-	// 	}
-	// }
-
-	return nil
 }
