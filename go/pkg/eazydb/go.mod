@@ -1,4 +1,4 @@
-module github.com/mattam808/eazydb/go/pkg/eazydb
+module github.com/mperkins808/eazydb/go/pkg/eazydb
 
 go 1.23.4
 

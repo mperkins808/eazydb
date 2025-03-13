@@ -11,7 +11,7 @@ No CLIs required, this is plug and play
 ## Install
 
 ```
-go get github.com/mattam808/eazydb/go/pkg/eazydb
+go get github.com/mperkins808/eazydb/go/pkg/eazydb
 ```
 
 ## Usage
