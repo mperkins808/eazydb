@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/mattam808/eazydb/go/pkg/eazydb"
-	"github.com/mattam808/eazydb/go/pkg/eazydb/dbtypes"
+	"github.com/mperkins808/eazydb/go/pkg/eazydb"
+	"github.com/mperkins808/eazydb/go/pkg/eazydb/dbtypes"
 	"github.com/sirupsen/logrus"
 )
 
